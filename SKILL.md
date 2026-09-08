@@ -234,7 +234,7 @@ CLONE_PROXY=https://your-proxy.example.com/https://github.com
 - **修复**：换梯次内下一镜像重试；对照官方 release 的文件大小确认
 - **预防**：大文件下载后必验 sha256；发现限流站写进黑名单注释
 
-### 6.8 改 hosts 指向 github.com 的 IP 无效
+### 6.9 改 hosts 指向 github.com 的 IP 无效
 - **症状**：写了 hosts 依然超时
 - **原因**：实测 DNS 已解析到 20.205.243.166 且该 IP 本身不通——是 IP 被干扰而非解析错误
 - **修复**：放弃 hosts 方案，改用本技能的镜像梯次
@@ -242,7 +242,13 @@ CLONE_PROXY=https://your-proxy.example.com/https://github.com
 
 ---
 
-## 7. 反模式清单
+### 6.8 git push 直连反复失败（github.com 断连窗口）
+- **症状**：`git push` 报 `Failed to connect to github.com port 443`，重试 3 次均失败
+- **原因**：github.com 网页/git 端点间歇断连（见 §3 基线），而 api.github.com 独立通道通常存活
+- **修复**：改走 API 四步提交——①`POST repos/O/R/git/blobs` 传每个改动文件（base64）→ ②`POST git/trees`（带 base_tree）→ ③`POST git/commits`（parent 指当前远端 HEAD）→ ④`PATCH git/refs/heads/main` 挪指针。实测全程 ~15s，与 git push 结果等价
+- **预防**：push 失败 2 次即切换 API 通道，不要在断连窗口干等；push 前先 `gh api repos/O/R --jq .pushed_at` 感知通道状态
+
+## 9. 验证清单
 
 - ❌ **全局 `git config url.insteadOf` 持久改写**——所有仓库静默改道镜像，push 凭据与审计全部混乱；用单命令前缀
 - ❌ **私有仓库走第三方镜像**——URL 暴露给镜像运营方；经 §5.1 声明的自建代理除外
