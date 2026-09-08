@@ -1,0 +1,10 @@
+# gh-accelerator 本地私有代理配置模板
+# 复制到 ~/.config/gh-accelerator/proxies.conf（路径可用环境变量 GH_ACCEL_CONFIG 覆盖）
+# 每行一条，# 为注释；支持裸域名（自动补 https://）；本地代理自动优先于内置公共镜像。
+# ⚠️ 机器本地文件，禁止提交到任何仓库。
+
+# 自建下载加速（gh-proxy 类前缀服务）
+#DOWNLOAD_PROXY=https://your-proxy.example.com
+
+# 自建 clone 加速（需支持 /https://github.com 前缀透传）
+#CLONE_PROXY=https://your-proxy.example.com/https://github.com

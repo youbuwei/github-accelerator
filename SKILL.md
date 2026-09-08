@@ -1,6 +1,6 @@
 ---
 name: github-accelerator
-version: 1.1.0
+version: 1.2.0
 description: "Use when GitHub access fails: fallback mirrors for git."
 author: Hermes Agent
 license: MIT-0
@@ -64,7 +64,7 @@ scripts/gh_accel.sh dl <url>      scripts/gh_accel.sh clone OWNER/REPO
 ### 1.3 ⚠️ 边界条件
 
 - ⚠️ 镜像全部是**只读**通道：经镜像 clone 后 push 前必须 `set-url` 回官方（见 6.5）
-- ⚠️ **私有仓库不要经第三方镜像 clone**——仓库 URL 会暴露给镜像站；自建可信代理除外
+- ⚠️ **私有仓库不要经第三方镜像 clone**——仓库 URL 会暴露给镜像站；经 §5.1 本地配置声明的自建代理视为用户自有可信设施，不受此限
 - ⚠️ 本文件的「网络基线」是一台腾讯云服务器的实测快照，其他机器以 `check` 结果为准
 - ⚠️ 镜像站寿命以月计，梯次会过期，维护方法见 §10
 
@@ -160,6 +160,8 @@ gh release download --repo OWNER/REPO             # release 资产优先走 API 
 
 **已死勿用**：ghp.ci、ghgo.xyz、ghproxy.com、hub.fastgit.org；**疑似限流**：ghproxy.net（2.3MB 文件只给 0.56MB）。
 
+自建/私有代理：经 §5.1 本地配置注入，自动排在梯次最前（已配置的机器上 `check` 输出带 `[本地]` 标记）。
+
 ## 5. 脚本命令参考
 
 ```bash
@@ -170,7 +172,21 @@ scripts/gh_accel.sh clone <owner/repo> [dir]   # 克隆，直连→镜像自动�
 scripts/gh_accel.sh clone --no-direct o/r [dir]
 ```
 
-修改梯次：编辑脚本顶部 `DL_PROXIES` / `CLONE_PROXIES` 两个数组即可，无需动其他逻辑。
+公共梯次硬编码于脚本顶部 `DL_PROXIES` / `CLONE_PROXIES` 数组；个人自建代理不走硬编码，用 §5.1 配置文件注入。
+
+### 5.1 本地私有代理（自建加速域名接入）
+
+自建代理不写进脚本，写入机器本地配置文件即可自动生效，并**优先于公共镜像**：
+
+- 路径：`~/.config/gh-accelerator/proxies.conf`（环境变量 `GH_ACCEL_CONFIG` 可覆盖；首次运行脚本会自动生成注释模板）
+- 格式：每行一条，`#` 注释，裸域名自动补 `https://`
+
+```
+DOWNLOAD_PROXY=https://your-proxy.example.com
+CLONE_PROXY=https://your-proxy.example.com/https://github.com
+```
+
+**Agent 行为约定**：用户提到"我有自己的加速域名 / 自建代理"时，Agent 应把地址写入上述配置文件（`DOWNLOAD_PROXY` / `CLONE_PROXY` 各一行），随后跑 `scripts/gh_accel.sh check` 验证，并确认输出带 `[本地]` 标记。该文件属机器本地隐私，**禁止提交到任何仓库或发布物**。
 
 ---
 
@@ -229,7 +245,7 @@ scripts/gh_accel.sh clone --no-direct o/r [dir]
 ## 7. 反模式清单
 
 - ❌ **全局 `git config url.insteadOf` 持久改写**——所有仓库静默改道镜像，push 凭据与审计全部混乱；用单命令前缀
-- ❌ **私有仓库走第三方镜像**——URL 暴露给镜像运营方；自有代理除外
+- ❌ **私有仓库走第三方镜像**——URL 暴露给镜像运营方；经 §5.1 声明的自建代理除外
 - ❌ **直接采用文章推荐的镜像不实测**——镜像站死亡率极高；必须真实文件 + sha256 验证
 - ❌ **只配一个镜像**——梯次 <2 个等于没有兜底
 - ⚠️ gh CLI 永远直连不镜像：api.github.com 是最稳通道，套镜像反而引入新故障点

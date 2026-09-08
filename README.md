@@ -17,6 +17,7 @@
 - **网页内容绕过网页**——README / 源文件用 `gh api` 直连取，不看 github.com 页面
 - **下载自动降级**：直连 → `ghfast.top` → `gh-proxy.com`
 - **clone 自动降级**：直连 → `gitclone.com` → `gh-proxy.com`
+- **本地私有代理**：`~/.config/gh-accelerator/proxies.conf` 一行接入自建域名，自动优先于公共镜像（见 SKILL.md §5.1）
 - **`check` 实时探测**：直连 + 全部下载镜像 + clone 通道，一目了然
 - **已知死亡镜像黑名单**，附于 SKILL.md 与脚本注释，避免重复踩坑
 
@@ -115,6 +116,7 @@ gh api repos/OWNER/REPO/readme --jq .content | base64 -d
 | gitclone.com clone 报 502 | 该站冷缓存/不稳定，属正常现象；脚本自动跳到下一镜像，或稍后重试 |
 | 直连明明通了却走了镜像 | 直连首试偶发超时即降级——符合设计（重试成本 < 长时间挂起） |
 | 经镜像 clone 后 push 报认证失败 | remote 还是镜像地址；按脚本提示 `set-url` 回官方源再 push |
+| 有自己的加速域名想接入 | 写入 `~/.config/gh-accelerator/proxies.conf`（模板见 `templates/`），自动优先于公共镜像 |
 
 ## License
 
