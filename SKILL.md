@@ -1,10 +1,26 @@
 ---
 name: github-accelerator
-version: 1.2.1
-description: "Use when GitHub access fails: fallback mirrors for git."
+version: 1.3.0
+description: "Read-only GitHub fallback for public repos: direct-first mirror clone/download plus gh api reads. No repository writes."
 author: Hermes Agent
 license: MIT-0
 platforms: [linux, macos]
+permissions:
+  allowed-tools:
+    - bash
+    - curl
+    - git
+    - gh
+  scope: |
+    Read-only GitHub transport fallback for public repositories.
+    Network: GitHub hosts and configured mirror/proxy hosts only.
+    Files: read downloads and clone destinations; write ~/.config/gh-accelerator/proxies.conf
+    only after explicit user approval of the exact entries.
+  prohibited:
+    - Repository writes, pushes, or ref updates
+    - Private repos, tokens, or credential-bearing URLs through third-party mirrors
+    - Global git config rewrites
+    - Secret exfiltration
 metadata:
   hermes:
     tags: [GitHub, 网络加速, 镜像, git, 代理下载]
@@ -14,6 +30,10 @@ metadata:
 # GitHub 加速器（github-accelerator）
 
 GitHub 访问不畅时的降级加速技能：**直连优先 → 镜像兑底 → 用前探测**。覆盖网页内容获取、仓库克隆、raw/Release 文件下载三类场景，核心逻辑封装在自包含脚本 `scripts/gh_accel.sh`（仅依赖 bash + curl + git）。
+
+**语言说明**：本技能面向 CN 网络环境的中文用户，文档以中文为主；脚本输出支持 `GH_ACCEL_LANG=zh|en` 切换（默认 `zh`）。
+
+**能力边界**：本技能只做**只读**操作。`dl`/`clone` 仅支持 GitHub 官方域名与公开仓库；任何仓库写入（push、commit、ref 更新）都不属于本技能。
 
 ---
 
@@ -59,6 +79,7 @@ scripts/gh_accel.sh dl <url>      scripts/gh_accel.sh clone OWNER/REPO
 
 - `api.github.com` 完全不可达的网络（整站级封锁，镜像梯次也救不了 API 通道）——此时 gh CLI 功能全部失效，只能靠镜像脚本
 - 需要登录态的网页操作（PR 评论、Issue 管理等）——走 gh CLI 直连，别走镜像
+- **任何仓库写入**（push、创建 commit、更新 ref）——本技能严格只读，写操作请由用户显式发起其他工具完成
 - 非 GitHub 的 git 托管（GitLab/Gitee 等）
 
 ### 1.3 ⚠️ 边界条件
@@ -80,14 +101,14 @@ scripts/gh_accel.sh dl <url>      scripts/gh_accel.sh clone OWNER/REPO
 | "clone 不下来 / git clone 卡住" | `gh_accel.sh clone OWNER/REPO` |
 | "release 下载失败 / raw 拉不到 / 下载太慢" | `gh_accel.sh dl <url>` |
 | "换个镜像 / 加速 GitHub" | `check` 探测后按结果更新梯次（§10） |
-| "push 失败 / 认证失败" | 检查 remote 是否还指向镜像（§6.5） |
+| "push 失败 / 认证失败" | 只检查 remote 是否还指向镜像（§6.5）；本技能不提供 push 通道 |
 | 大批量 clone / CI 拉依赖 | 先 `check`，把存活镜像写入流水线 |
 
 ### 2.2 Agent 标准工作流
 
 ```
 1. 探测   scripts/gh_accel.sh check          → 确认直连/镜像存活状态
-2. 执行   dl / clone / gh api 按需选择       → 直连失败自动降级，无需干预
+2. 执行   dl / clone / gh api（只读）按需选择 → 直连失败自动降级，无需干预
 3. 验证   文件比对大小或 sha256；clone 后 remote get-url 确认指向
 4. 收尾   经镜像 clone 的仓库 push 前 set-url 回官方源
 ```
@@ -105,9 +126,9 @@ scripts/gh_accel.sh dl <url>      scripts/gh_accel.sh clone OWNER/REPO
 
 ## 4. 场景对策
 
-### 4.1 网页内容（github.com 超时时）
+### 4.1 网页内容（github.com 超时时，只读 gh api）
 
-要内容不要页面——README/源文件一律用 gh api 直连取：
+要内容不要页面——README/源文件一律用 gh api 的**只读 GET** 直连取（这是经认证的 API 读操作，仅用于公开内容；不要执行任何写方法）：
 
 ```bash
 gh api repos/OWNER/REPO/readme --jq .content | base64 -d          # README
@@ -146,10 +167,11 @@ scripts/gh_accel.sh clone --no-direct OWNER/REPO [dir]   # 跳过直连，测镜
 ```bash
 scripts/gh_accel.sh dl <github-url>
 scripts/gh_accel.sh dl --no-direct <github-url>   # 跳过直连
+scripts/gh_accel.sh dl --sha256 <hash> <url>      # 校验通过才落盘
 gh release download --repo OWNER/REPO             # release 资产优先走 API 直连
 ```
 
-下载后**验证完整性**（镜像可能截断/限流）：`ls -l` 比对文件大小，或与官方 release 页 sha256 对比。
+脚本仅接受 GitHub 官方域名 URL，拒绝查询串/内嵌凭据；先写临时文件，目标文件已存在时拒绝覆盖。镜像可能截断/篡改内容，务必用官方 release 公布的 `--sha256` 校验；脚本成功后也会回显实际 sha256。
 
 ### 4.4 镜像梯次与黑名单（2026-09-08 实测）
 
@@ -166,10 +188,10 @@ gh release download --repo OWNER/REPO             # release 资产优先走 API 
 
 ```bash
 scripts/gh_accel.sh check                      # 探测直连 + 下载镜像 + clone 镜像
-scripts/gh_accel.sh dl <github-url>            # 下载，直连→镜像自动降级
-scripts/gh_accel.sh dl --no-direct <url>       # 强制走镜像链
+scripts/gh_accel.sh dl [--no-direct] [--sha256 H] <github-url>
 scripts/gh_accel.sh clone <owner/repo> [dir]   # 克隆，直连→镜像自动降级
 scripts/gh_accel.sh clone --no-direct o/r [dir]
+GH_ACCEL_LANG=en scripts/gh_accel.sh check     # 英文输出（默认 zh）
 ```
 
 公共梯次硬编码于脚本顶部 `DL_PROXIES` / `CLONE_PROXIES` 数组；个人自建代理不走硬编码，用 §5.1 配置文件注入。
@@ -186,7 +208,7 @@ DOWNLOAD_PROXY=https://your-proxy.example.com
 CLONE_PROXY=https://your-proxy.example.com/https://github.com
 ```
 
-**Agent 行为约定**：用户提到"我有自己的加速域名 / 自建代理"时，Agent 应把地址写入上述配置文件（`DOWNLOAD_PROXY` / `CLONE_PROXY` 各一行），随后跑 `scripts/gh_accel.sh check` 验证，并确认输出带 `[本地]` 标记。该文件属机器本地隐私，**禁止提交到任何仓库或发布物**。
+**Agent 行为约定**：用户提到"我有自己的加速域名 / 自建代理"时，Agent 必须先展示准备写入的精确配置行（`DOWNLOAD_PROXY` / `CLONE_PROXY`），**获得用户明确同意后**才能写入上述配置文件，随后跑 `scripts/gh_accel.sh check` 验证，并确认输出带 `[本地]` 标记。该文件属机器本地隐私，**禁止提交到任何仓库或发布物**。
 
 ---
 
@@ -234,13 +256,7 @@ CLONE_PROXY=https://your-proxy.example.com/https://github.com
 - **修复**：换梯次内下一镜像重试；对照官方 release 的文件大小确认
 - **预防**：大文件下载后必验 sha256；发现限流站写进黑名单注释
 
-### 6.8 git push 直连反复失败（github.com 断连窗口）
-- **症状**：`git push` 报 `Failed to connect to github.com port 443`，重试 3 次均失败
-- **原因**：github.com 网页/git 端点间歇断连（见 §3 基线），而 api.github.com 独立通道通常存活
-- **修复**：改走 API 四步提交——①`POST repos/O/R/git/blobs` 传每个改动文件（base64）→ ②`POST git/trees`（带 base_tree）→ ③`POST git/commits`（parent 指当前远端 HEAD）→ ④`PATCH git/refs/heads/main` 挪指针。实测全程 ~15s，与 git push 结果等价
-- **预防**：push 失败 2 次即切换 API 通道，不要在断连窗口干等；push 前先 `gh api repos/O/R --jq .pushed_at` 感知通道状态
-
-### 6.9 改 hosts 指向 github.com 的 IP 无效
+### 6.8 改 hosts 指向 github.com 的 IP 无效
 - **症状**：写了 hosts 依然超时
 - **原因**：实测 DNS 已解析到 20.205.243.166 且该 IP 本身不通——是 IP 被干扰而非解析错误
 - **修复**：放弃 hosts 方案，改用本技能的镜像梯次
@@ -255,6 +271,7 @@ CLONE_PROXY=https://your-proxy.example.com/https://github.com
 - ❌ **私有仓库走第三方镜像**——URL 暴露给镜像运营方；经 §5.1 声明的自建代理除外
 - ❌ **直接采用文章推荐的镜像不实测**——镜像站死亡率极高；必须真实文件 + sha256 验证
 - ❌ **只配一个镜像**——梯次 <2 个等于没有兜底
+- ❌ **用 GitHub API 手工拼 blobs/trees/commits/refs 代替 push**——属于仓库写入且绕过常规审查，本技能不提供该通道
 - ⚠️ gh CLI 永远直连不镜像：api.github.com 是最稳通道，套镜像反而引入新故障点
 
 ## 8. FAQ
@@ -283,7 +300,8 @@ CLONE_PROXY=https://your-proxy.example.com/https://github.com
 ## 9. 验证清单
 
 - [ ] `check` 至少一条下载镜像 ✓
-- [ ] `dl` 下载的文件大小/sha256 与官方 release 一致
+- [ ] `dl` 下载用官方 sha256 校验通过（`--sha256`），或成功输出中的 sha256 已人工比对
+- [ ] `dl` 未覆盖任何已存在文件；目标目录非空时 `clone` 明确拒绝
 - [ ] `clone` 后 `git remote get-url origin` 确认指向符合预期（官方=直连成功；镜像=已提示 set-url）
 - [ ] 经镜像 clone 的仓库，push 前 `set-url` 已执行
 - [ ] 大文件（>10MB）下载后校验过 sha256

@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# gh_accel.sh — GitHub 网络加速工具（直连优先，镜像兜底）
+# gh_accel.sh - GitHub 网络加速工具（直连优先，镜像兜底；仅只读操作）
 # 自建/私有加速代理经本地配置文件注入（自动优先于内置镜像），无需改动本脚本：
 #   ~/.config/gh-accelerator/proxies.conf   （可用环境变量 GH_ACCEL_CONFIG 覆盖路径）
-# 依赖: curl, git。镜像状态易变，用前建议先跑 check。
+# 输出语言: GH_ACCEL_LANG=zh（默认，面向 CN 网络用户）或 en
+# 依赖: curl, git, sha256sum/shasum。镜像状态易变，用前建议先跑 check。
 set -uo pipefail
 
 CONFIG_FILE="${GH_ACCEL_CONFIG:-$HOME/.config/gh-accelerator/proxies.conf}"
+LANG_SEL="${GH_ACCEL_LANG:-zh}"
+
+# msg <zh-text> <en-text>
+msg() {
+  if [ "$LANG_SEL" = "en" ]; then printf '%s\n' "$2"; else printf '%s\n' "$1"; fi
+}
 
 # 内置公共镜像梯次（按序自动降级）
 DL_PROXIES=(https://ghfast.top https://gh-proxy.com)
@@ -24,7 +31,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
   mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null \
     && cat > "$CONFIG_FILE" <<'TMPL' 2>/dev/null || true
 # gh-accelerator 本地私有代理配置（机器本地文件，禁止提交到仓库）
+# Local private proxy config. Machine-local; never commit it.
 # 每行一条，去掉行首 # 并改成你的代理地址即可生效；会自动排在公共镜像之前。
+# One entry per line: uncomment and set your proxy; local entries outrank public mirrors.
 # DOWNLOAD_PROXY=https://your-proxy.example.com
 # CLONE_PROXY=https://your-proxy.example.com/https://github.com
 TMPL
@@ -56,17 +65,50 @@ is_local() {
   return 1
 }
 
-usage() {
-  cat <<'EOF'
-用法:
-  gh_accel.sh check                    探测直连与各镜像可用性（含本地私有代理）
-  gh_accel.sh dl <github-url>          下载 raw/release/archive（自动降级）
-  gh_accel.sh dl --no-direct <url>     跳过直连，直接走镜像链
-  gh_accel.sh clone <owner/repo> [dir] 克隆仓库（自动降级）
-  gh_accel.sh clone --no-direct o/r [dir]
+# 仅接受 GitHub 官方域名的 https URL；拒绝查询串/片段与内嵌凭据，避免令牌经镜像泄露。
+github_url_ok() {
+  [[ "$1" =~ ^https://[^/@]+@ ]] && return 3
+  case "$1" in
+    https://github.com/*|\
+    https://raw.githubusercontent.com/*|\
+    https://gist.githubusercontent.com/*|\
+    https://objects.githubusercontent.com/*|\
+    https://release-assets.githubusercontent.com/*|\
+    https://github-releases.githubusercontent.com/*|\
+    https://codeload.github.com/*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *\?*|*\#*) return 2 ;;
+  esac
+  return 0
+}
 
-本地私有代理配置: $GH_ACCEL_CONFIG（默认 ~/.config/gh-accelerator/proxies.conf）
-EOF
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+usage() {
+  msg "用法:" "Usage:"
+  msg "  gh_accel.sh check                        探测直连与各镜像可用性" \
+      "  gh_accel.sh check                        probe direct links and mirrors"
+  msg "  gh_accel.sh dl [--no-direct] [--sha256 H] <github-url>" \
+      "  gh_accel.sh dl [--no-direct] [--sha256 H] <github-url>"
+  msg "  gh_accel.sh clone [--no-direct] <owner/repo> [dir]" \
+      "  gh_accel.sh clone [--no-direct] <owner/repo> [dir]"
+  msg "" ""
+  msg "仅接受 GitHub 官方域名 URL；目标文件已存在时拒绝覆盖。" \
+      "Only official GitHub-host URLs are accepted; existing output files are never overwritten."
+  msg "语言: GH_ACCEL_LANG=zh|en（默认 zh）" \
+      "Language: GH_ACCEL_LANG=zh|en (default: zh)"
+  msg "本地私有代理配置: \$GH_ACCEL_CONFIG（默认 ~/.config/gh-accelerator/proxies.conf）" \
+      "Private proxies: \$GH_ACCEL_CONFIG (default: ~/.config/gh-accelerator/proxies.conf)"
   exit 1
 }
 
@@ -121,67 +163,149 @@ cmd_check() {
 }
 
 cmd_dl() {
-  local no_direct=0 url="${2:-$1}"
-  [ "$1" = "--no-direct" ] && no_direct=1
-  [[ "$url" == http* ]] || url="https://$url"
+  local no_direct=0 expect_sha="" url=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-direct) no_direct=1 ;;
+      --sha256)
+        [ $# -ge 2 ] || usage
+        expect_sha="$2"; shift ;;
+      -*) usage ;;
+      *)
+        [ -z "$url" ] || usage
+        url="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$url" ] || usage
+
+  case "$url" in
+    https://*) ;;
+    http://*) url="https://${url#http://}" ;;
+    *) url="https://$url" ;;
+  esac
+  github_url_ok "$url"
+  case $? in
+    1) msg "❌ 仅支持 GitHub 官方域名 URL（github.com / *.githubusercontent.com / codeload.github.com）" \
+           "ERROR: only official GitHub-host URLs are supported"; return 1 ;;
+    2) msg "❌ 拒绝含查询串/片段的 URL（可能携带令牌）" \
+           "ERROR: URLs with query strings or fragments are rejected (possible token leakage)"; return 1 ;;
+    3) msg "❌ 拒绝内嵌凭据的 URL" \
+           "ERROR: URLs with embedded credentials are rejected"; return 1 ;;
+  esac
+
   local out="$(basename "${url%%\?*}")"
   [ -z "$out" ] && out="download.bin"
+  case "$out" in
+    -*) msg "❌ 拒绝非安全文件名: $out" "ERROR: unsafe output filename: $out"; return 1 ;;
+  esac
+  if [ -e "$out" ]; then
+    msg "❌ 目标文件已存在，拒绝覆盖: $out（请先移走或改名）" \
+        "ERROR: output file already exists, refusing to overwrite: $out"
+    return 1
+  fi
+  local tmp="$(mktemp "./.${out}.XXXXXX")"
 
-  if [ $no_direct -eq 0 ]; then
-    echo "→ 直连: $url"
-    code=$(fetch "$url" "$out" 60)
-    if [ "$code" = "200" ] && [ -s "$out" ]; then
-      echo "✅ 直连成功 -> $out ($(du -h "$out" | cut -f1))"
+  local code got_sha p
+  try_channel() {
+    code=$(fetch "$1" "$tmp" "$2")
+    if [ "$code" = "200" ] && [ -s "$tmp" ]; then
+      if [ -n "$expect_sha" ]; then
+        got_sha="$(sha256_file "$tmp")" || {
+          rm -f "$tmp"
+          msg "  ✗ 无法计算 sha256（缺少 sha256sum/shasum）" \
+              "  FAIL: cannot compute sha256 (sha256sum/shasum missing)"
+          return 1
+        }
+        if [ "$got_sha" != "$expect_sha" ]; then
+          rm -f "$tmp"
+          msg "  ✗ sha256 不匹配（期望 ${expect_sha:0:12}…，得到 ${got_sha:0:12}…）" \
+              "  FAIL: sha256 mismatch (expected ${expect_sha:0:12}..., got ${got_sha:0:12}...)"
+          return 1
+        fi
+      fi
+      mv "$tmp" "$out" || { rm -f "$tmp"; return 1; }
+      got_sha="$(sha256_file "$out" 2>/dev/null)" || got_sha="unknown"
+      msg "✅ 经 $3 下载成功 -> $out ($(du -h "$out" | cut -f1), sha256=$got_sha)" \
+          "OK: downloaded via $3 -> $out ($(du -h "$out" | cut -f1), sha256=$got_sha)"
+      [ -z "$expect_sha" ] && msg "⚠️  未提供 --sha256，请自行校验后再使用" \
+                                  "WARN: no --sha256 given; verify before use"
       return 0
     fi
-    echo "  ✗ 直连失败 (http=$code)，降级镜像…"
+    rm -f "$tmp"
+    return 1
+  }
+
+  if [ $no_direct -eq 0 ]; then
+    msg "→ 直连: $url" "-> direct: $url"
+    try_channel "$url" 60 "直连/direct" && return 0
+    msg "  ✗ 直连失败 (http=$code)，降级镜像…" "  FAIL: direct link (http=$code), falling back to mirrors..."
   fi
 
   for p in "${DL_PROXIES[@]}"; do
-    echo "→ 镜像: $p"
-    code=$(fetch "$p/$url" "$out" 90)
-    if [ "$code" = "200" ] && [ -s "$out" ]; then
-      echo "✅ 经 $p 下载成功 -> $out ($(du -h "$out" | cut -f1))"
-      return 0
-    fi
-    echo "  ✗ $p 失败 (http=$code)"
+    msg "→ 镜像: $p" "-> mirror: $p"
+    try_channel "$p/$url" 90 "$p" && return 0
+    msg "  ✗ $p 失败 (http=$code)" "  FAIL: $p (http=$code)"
   done
-  echo "❌ 全部通道失败。跑 'gh_accel.sh check' 看镜像状态，或找新镜像更新 DL_PROXIES"
+  rm -f "$tmp"
+  msg "❌ 全部通道失败。跑 'gh_accel.sh check' 看镜像状态，或找新镜像更新 DL_PROXIES" \
+      "ERROR: all channels failed. Run 'gh_accel.sh check' or update DL_PROXIES"
   return 1
 }
 
 cmd_clone() {
-  local no_direct=0 repo dir
-  if [ "$1" = "--no-direct" ]; then
-    no_direct=1; repo="$2"; dir="${3:-}"
-  else
-    repo="$1"; dir="${2:-}"
-  fi
+  local no_direct=0 repo="" dir="" dir_pre_existed=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-direct) no_direct=1 ;;
+      -*) usage ;;
+      *)
+        if [ -z "$repo" ]; then repo="$1"
+        elif [ -z "$dir" ]; then dir="$1"
+        else usage; fi ;;
+    esac
+    shift
+  done
+  [ -n "$repo" ] || usage
   repo="${repo#https://github.com/}"; repo="${repo%.git}"
+  case "$repo" in
+    */*/*|.*|*..*|*[[:space:]]*|"") msg "❌ 非法仓库标识: $repo（格式 owner/repo）" \
+                                       "ERROR: invalid repository id: $repo (expected owner/repo)"; return 1 ;;
+  esac
   [ -z "$dir" ] && dir="$(basename "$repo")"
+  case "$dir" in
+    -*) msg "❌ 拒绝非安全目录名: $dir" "ERROR: unsafe destination directory: $dir"; return 1 ;;
+  esac
+  if [ -e "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
+    msg "❌ 目标目录已存在且非空，拒绝克隆: $dir" \
+        "ERROR: destination exists and is not empty, refusing to clone: $dir"
+    return 1
+  fi
+  [ -e "$dir" ] && dir_pre_existed=1
 
   if [ $no_direct -eq 0 ]; then
-    echo "→ 直连: https://github.com/$repo"
+    msg "→ 直连: https://github.com/$repo" "-> direct: https://github.com/$repo"
     if git clone "https://github.com/$repo" "$dir"; then
-      echo "✅ 直连 clone 成功 -> $dir"
+      msg "✅ 直连 clone 成功 -> $dir" "OK: direct clone -> $dir"
       return 0
     fi
-    rm -rf "$dir"
-    echo "  ✗ 直连失败，降级镜像…"
+    if [ "$dir_pre_existed" -eq 0 ]; then rmdir "$dir" 2>/dev/null || true; fi
+    msg "  ✗ 直连失败，降级镜像…" "  FAIL: direct clone, falling back to mirrors..."
   fi
 
   for base in "${CLONE_PROXIES[@]}"; do
-    echo "→ 镜像: $base/$repo"
+    msg "→ 镜像: $base/$repo" "-> mirror: $base/$repo"
     if git clone "$base/$repo" "$dir"; then
-      echo "✅ 经镜像 clone 成功 -> $dir"
-      echo "⚠️  remote 指向镜像，push 前执行:"
-      echo "   git -C $dir remote set-url origin https://github.com/$repo.git"
+      msg "✅ 经镜像 clone 成功 -> $dir" "OK: mirror clone -> $dir"
+      msg "⚠️  remote 指向镜像，push 前执行:" "WARN: remote points to the mirror; before pushing run:"
+      msg "   git -C $dir remote set-url origin https://github.com/$repo.git" \
+          "   git -C $dir remote set-url origin https://github.com/$repo.git"
       return 0
     fi
-    rm -rf "$dir"
-    echo "  ✗ 失败"
+    if [ "$dir_pre_existed" -eq 0 ]; then rmdir "$dir" 2>/dev/null || true; fi
+    msg "  ✗ 失败" "  FAIL"
   done
-  echo "❌ 全部通道失败。跑 'gh_accel.sh check' 探测"
+  msg "❌ 全部通道失败。跑 'gh_accel.sh check' 探测" "ERROR: all channels failed. Run 'gh_accel.sh check'."
   return 1
 }
 

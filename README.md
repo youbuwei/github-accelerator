@@ -17,9 +17,22 @@
 - **网页内容绕过网页**——README / 源文件用 `gh api` 直连取，不看 github.com 页面
 - **下载自动降级**：直连 → `ghfast.top` → `gh-proxy.com`
 - **clone 自动降级**：直连 → `gitclone.com` → `gh-proxy.com`
+- **传输安全护栏**：仅接受 GitHub 官方域名 URL；拒绝查询串/内嵌凭据；先写临时文件、拒绝覆盖已有文件；支持 `--sha256` 校验通过才落盘
+- **clone 目录保护**：目标目录已存在且非空时直接拒绝，失败清理只用非递归 `rmdir`
 - **本地私有代理**：`~/.config/gh-accelerator/proxies.conf` 一行接入自建域名，自动优先于公共镜像（见 SKILL.md §5.1）
 - **`check` 实时探测**：直连 + 全部下载镜像 + clone 通道，一目了然
 - **已知死亡镜像黑名单**，附于 SKILL.md 与脚本注释，避免重复踩坑
+
+## 安全与隐私
+
+公共镜像本质是**不可信第三方转发方**：它们能看到完整仓库 URL、客户端 IP 和访问时间，也可能截断或篡改下载内容。因此：
+
+- 只用于**公开仓库的只读内容**；私有仓库、Release 附件中的敏感产物不要走公共镜像
+- 绝不把带 token/凭据的 URL 交给镜像（脚本会拒绝查询串与内嵌凭据）
+- 下载后用官方公布的 sha256 校验：`gh_accel.sh dl --sha256 <hash> <url>`
+- 经镜像 clone 后先确认 `git remote get-url origin`，push 前务必 `set-url` 回官方源
+- 更信任自建代理时优先用 `~/.config/gh-accelerator/proxies.conf` 接入
+- 本技能**不执行任何仓库写入**（push / commit / ref 更新均不在此范围内）
 
 ## 目录结构
 
@@ -71,8 +84,9 @@ scripts/gh_accel.sh check
 ```
 
 ```bash
-# 2. 下载文件（自动降级：直连失败 → 镜像梯次）
-scripts/gh_accel.sh dl https://github.com/OWNER/REPO/releases/download/v1.0.0/app-linux-amd64
+# 2. 下载文件（自动降级；--sha256 校验通过才落盘）
+scripts/gh_accel.sh dl --sha256 <official-hash> \
+  https://github.com/OWNER/REPO/releases/download/v1.0.0/app-linux-amd64
 
 # 3. 克隆仓库（自动降级）
 scripts/gh_accel.sh clone OWNER/REPO
@@ -81,7 +95,7 @@ scripts/gh_accel.sh clone OWNER/REPO
 gh api repos/OWNER/REPO/readme --jq .content | base64 -d
 ```
 
-完整命令参考见 SKILL.md（`dl` / `clone` 均支持 `--no-direct` 强制走镜像链，便于测试）。
+完整命令参考见 SKILL.md（`dl` / `clone` 均支持 `--no-direct` 强制走镜像链，便于测试；`GH_ACCEL_LANG=en` 可切换英文输出）。
 
 ## 新机器首次使用
 
@@ -104,6 +118,7 @@ gh api repos/OWNER/REPO/readme --jq .content | base64 -d
 
 - 收益范围：仅 github.com 网页/端点被干扰的环境；`api.github.com` 不通的网络本技能无法救治（那是更彻底的封锁）
 - **镜像只读**：经镜像 clone 后，remote 指向镜像地址，push 前必须 `git remote set-url origin https://github.com/OWNER/REPO.git`
+- **本技能只读**：不提供 push、API 提交或 ref 更新通道；`gh api` 示例仅限只读 GET
 - `gh api` 取内容依赖目标机器装有并登录 gh CLI；`dl`/`clone` 脚本只需 bash + curl + git
 - 不修改全局 git 配置（不写 `url.insteadOf`），全部为单命令级操作，可审计、可回滚
 
